@@ -1,26 +1,3 @@
-"""
-Thermophysical Model Multi-Parameter Exploration Script
-
-This script facilitates the exploration of thermophysical models by varying multiple key parameters simultaneously,
-allowing for a comprehensive analysis of different parameter combinations on model outcomes.
-
-Dependencies:
-- numpy
-- tqdm
-- itertools
-- pandas
-- seaborn
-- matplotlib
-- thermophysical_body_model module and its components
-
-TODO: 
-1) Allow for model crashing and identify but run the next model (needs to be implemented in the thermophysical_body_model.py)
-2) Fix tqdm progress bar
-3) Use for model validation 
-
-Author: Duncan Lyster
-"""
-
 import concurrent.futures
 import time
 import matplotlib.pyplot as plt
@@ -79,44 +56,11 @@ def generate_heatmaps(df, parameters, value_column, output_folder):
         plt.close()  # Close the figure to avoid displaying it inline if running in a notebook
 
 def main():
-    # Model setup and initialization
-    shape_model_name = "5km_ico_sphere_80_facets.stl"
-    path_to_shape_model_file = f"shape_models/{shape_model_name}"
-    path_to_setup_file = "model_setups/generic_model_parameters.json"
-    simulation = Simulation(path_to_setup_file)
-    shape_model = read_shape_model(path_to_shape_model_file, simulation.timesteps_per_day, simulation.n_layers, simulation.max_days)
-
-    # Model component calculations
-    shape_model = calculate_visible_facets(shape_model)
-    shape_model = calculate_insolation(shape_model, simulation)
-    shape_model = calculate_initial_temperatures(shape_model, simulation.n_layers, simulation.emissivity)
-    shape_model = calculate_secondary_radiation_coefficients(shape_model)
-
-    # Parameters for analysis with their ranges
-    parameter_ranges = {
-        'emissivity': np.linspace(0.4, 0.6, 3),
-        'albedo': np.linspace(0.4, 0.6, 3),
-        # 'thermal_conductivity': np.linspace(0.9, 1.1, 3),
-        # 'density': np.linspace(450, 550, 3), 
-        # 'specific_heat_capacity': np.linspace(950, 1050, 3),
-        # 'beaming_factor': np.linspace(0.9, 1.1,  3),
-        # 'solar_distance': np.linspace(0.8, 1.2, 3),
-        # 'solar_luminosity': np.linspace(3.6E26, 4.0E26, 3),
-    }
-
-    param_names = list(parameter_ranges.keys())
-    param_values = [parameter_ranges[name] for name in param_names]
-    all_combinations = list(product(*param_values))
-
-    # Include param_names with each combination
-    param_combinations_with_shape_model = [
-        (combination, shape_model, path_to_setup_file, param_names) for combination in all_combinations
-    ]
-
     # Define a function to calculate comet temperature given input parameters
     def calculate_comet_temperature(input_parameters):
         # Assign input parameters
-        emissivity, albedo, = input_parameters
+        emissivity, albedo, thermal_conductivity, density, specific_heat_capacity, beaming_factor, \
+        solar_distance_au, solar_luminosity, = input_parameters
 
         # Load the final day temperatures
         final_day_temperatures = np.loadtxt('outputs/final_day_temperatures.csv', delimiter=',')
@@ -146,6 +90,56 @@ def main():
         plt.legend()
         plt.show()
 
+    # Model setup and initialization
+    shape_model_name = "5km_ico_sphere_80_facets.stl"
+    path_to_shape_model_file = f"shape_models/{shape_model_name}"
+    path_to_setup_file = "model_setups/generic_model_parameters.json"
+    simulation = Simulation(path_to_setup_file)
+    shape_model = read_shape_model(path_to_shape_model_file, simulation.timesteps_per_day, simulation.n_layers, simulation.max_days)
+
+    # Model component calculations
+    shape_model = calculate_visible_facets(shape_model)
+    shape_model = calculate_insolation(shape_model, simulation)
+    shape_model = calculate_initial_temperatures(shape_model, simulation.n_layers, simulation.emissivity)
+    shape_model = calculate_secondary_radiation_coefficients(shape_model)
+
+    # Parameters for analysis with their ranges
+    parameter_ranges = {
+        'emissivity': np.linspace(0.4, 0.6, 3),
+        'albedo': np.linspace(0.4, 0.6, 3),
+        # Add other parameters here
+    }
+
+    param_names = list(parameter_ranges.keys())
+    param_values = [parameter_ranges[name] for name in param_names]
+    all_combinations = list(product(*param_values))
+
+    # Include param_names with each combination
+    param_combinations_with_shape_model = [
+        (combination, shape_model, path_to_setup_file, param_names) for combination in all_combinations
+    ]
+
+    # Read input parameters from CSV file
+    input_parameters_df = pd.read_csv('Datasheet_comet.csv')
+    input_parameters_df = input_parameters_df.dropna()
+
+    # Loop through each row in the dataframe
+    for index, row in input_parameters_df.iterrows():
+        # Convert row to list (input parameters)
+        input_parameters = row.tolist()
+
+        # Calculate comet temperature
+        comet_temperature = calculate_comet_temperature(input_parameters)
+
+        # Append comet temperature to the dataframe
+        input_parameters_df.at[index, 'Comet Temperature'] = comet_temperature
+
+    # Perform linear regression for each input parameter against comet temperature
+    for column in input_parameters_df.columns[1:]:
+        X = input_parameters_df[column].values
+        y = input_parameters_df['Comet Temperature'].values
+        perform_linear_regression(X, y, column)
+
     print("Starting parameter exploration...")
     with concurrent.futures.ProcessPoolExecutor(max_workers=4) as executor:
         futures = {executor.submit(run_model_with_parameters, *params) for params in param_combinations_with_shape_model}
@@ -173,20 +167,6 @@ def main():
     results_df.to_csv(csv_file_path, index=False)
 
     print("Results saved to 'thermophysical_model_results.csv'.")
-
-    # Perform linear regression for each input parameter against comet temperature
-# Perform linear regression for each input parameter against comet temperature
-# Perform linear regression for each input parameter against comet temperature
-    for column in results_df.columns[1:]:
-    # Drop rows with NaN values in the current column
-        df_without_nan = results_df.dropna(subset=[column, 'mean_temperature'], axis=0, how='any')
-
-    # Extract X and y after dropping NaN rows
-        X = df_without_nan[column].values
-        y = df_without_nan['mean_temperature'].values
-
-        perform_linear_regression(X, y, column)
-
 
 if __name__ == '__main__':
     main()
