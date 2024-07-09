@@ -47,11 +47,25 @@ Started: 15 Feb 2024
 Author: Duncan Lyster
 '''
 
+import logging
+import traceback
+import sys
+import subprocess
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('model_debug.log'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+
 import numpy as np
 import os
 import matplotlib.pyplot as plt
 import time
-import sys
+# import sys
 import json
 from animate_model import animate_model
 from numba import jit, njit, float64, int64, boolean
@@ -770,6 +784,8 @@ def main():
     This is the main program for the thermophysical body model. It calls the necessary functions to read in the shape model, set the material and model properties, calculate insolation and temperature arrays, and iterate until the model converges. The results are saved and visualized.
     '''
 
+    logging.debug("Starting main function")
+
     # Shape model name
     shape_model_name = "67P_not_to_scale_low_res.stl"
 
@@ -796,14 +812,14 @@ def main():
     simulation.include_self_heating = True
 
     ################ PLOTTING ################
-    plot_shadowing = False
+    plot_shadowing = True
     plot_insolation_curve = False
     plot_initial_temp_histogram = False
     plot_secondary_radiation_view_factors = False
     plot_secondary_contributions = False
     plot_final_day_temp_distribution = False
     plot_final_day_all_layers_temp_distribution = False
-    plot_all_days_all_layers_temp_distribution = True
+    plot_all_days_all_layers_temp_distribution = False
     plot_energy_terms = False # Note: You must set simulation.calculate_energy_terms to True to plot energy terms
     plot_temp_distribution_for_final_day = False
     animate_final_day_temp_distribution = True
@@ -825,214 +841,233 @@ def main():
 
     facet_index = 0 # Index of facet to plot
 
-    if plot_shadowing:
-        print(f"Preparing shadowing visualisation.\n")
+    try: 
 
-        animate_model(path_to_shape_model_file, thermal_data.insolation, simulation.rotation_axis, simulation.sunlight_direction, simulation.timesteps_per_day, colour_map='binary_r', plot_title='Shadowing on the body', axis_label='Insolation (W/m^2)', animation_frames=200, save_animation=False, save_animation_name='shadowing_animation.gif', background_colour = 'black')
+        if plot_shadowing:
+            try:
+                logging.debug("Starting shadowing animation")
+                animate_model(path_to_shape_model_file, thermal_data.insolation, simulation.rotation_axis, simulation.sunlight_direction, simulation.timesteps_per_day, colour_map='binary_r', plot_title='Shadowing on the body', axis_label='Insolation (W/m^2)', animation_frames=200, save_animation=False, save_animation_name='shadowing_animation.gif', background_colour = 'black')
+                logging.debug("Shadowing animation completed successfully")
+            except Exception as e:
+                logging.error(f"Error in shadowing animation: {str(e)}")
+                logging.error(f"Traceback: {traceback.format_exc()}")
 
-    if plot_insolation_curve:
-        fig_insolation = plt.figure()
-        plt.plot(thermal_data.insolation[facet_index])
-        plt.xlabel('Number of timesteps')
-        plt.ylabel('Insolation (W/m^2)')
-        plt.title('Insolation curve for a single facet for one full rotation of the body')
-        fig_insolation.show()
+        if plot_insolation_curve:
+            fig_insolation = plt.figure()
+            plt.plot(thermal_data.insolation[facet_index])
+            plt.xlabel('Number of timesteps')
+            plt.ylabel('Insolation (W/m^2)')
+            plt.title('Insolation curve for a single facet for one full rotation of the body')
+            fig_insolation.show()
 
-    print(f"Calculating initial temperatures.\n")
-    thermal_data = calculate_initial_temperatures(thermal_data, simulation.emissivity)
+        print(f"Calculating initial temperatures.\n")
+        thermal_data = calculate_initial_temperatures(thermal_data, simulation.emissivity)
 
-    if plot_initial_temp_histogram:
-        fig_histogram = plt.figure()
-        initial_temperatures = [thermal_data.temperatures[i, 0, 0] for i in range(len(shape_model))]
-        plt.hist(initial_temperatures, bins=20)
-        plt.xlabel('Initial temperature (K)')
-        plt.ylabel('Number of facets')
-        plt.title('Initial temperature distribution of all facets')
-        fig_histogram.show()
+        if plot_initial_temp_histogram:
+            fig_histogram = plt.figure()
+            initial_temperatures = [thermal_data.temperatures[i, 0, 0] for i in range(len(shape_model))]
+            plt.hist(initial_temperatures, bins=20)
+            plt.xlabel('Initial temperature (K)')
+            plt.ylabel('Number of facets')
+            plt.title('Initial temperature distribution of all facets')
+            fig_histogram.show()
 
-    numba_visible_facets = List()
-    for facets in thermal_data.visible_facets:
-        numba_visible_facets.append(np.array(facets, dtype=np.int64))
-    thermal_data.visible_facets = numba_visible_facets
+        numba_visible_facets = List()
+        for facets in thermal_data.visible_facets:
+            numba_visible_facets.append(np.array(facets, dtype=np.int64))
+        thermal_data.visible_facets = numba_visible_facets
 
-    if simulation.include_self_heating:
-        view_factors = []
-        all_view_factors = []
-        for i in tqdm(range(len(shape_model)), desc="Calculating secondary radiation view factors"):
-            visible_indices = thermal_data.visible_facets[i]
+        if simulation.include_self_heating:
+            view_factors = []
+            all_view_factors = []
+            for i in tqdm(range(len(shape_model)), desc="Calculating secondary radiation view factors"):
+                visible_indices = thermal_data.visible_facets[i]
 
-            subject_vertices = shape_model[i].vertices
-            subject_area = shape_model[i].area
-            subject_normal = shape_model[i].normal
-            test_vertices = np.array([shape_model[j].vertices for j in visible_indices]).reshape(-1, 3, 3)
-            test_areas = np.array([shape_model[j].area for j in visible_indices])
-            test_normals = np.array([shape_model[j].normal for j in visible_indices])
+                subject_vertices = shape_model[i].vertices
+                subject_area = shape_model[i].area
+                subject_normal = shape_model[i].normal
+                test_vertices = np.array([shape_model[j].vertices for j in visible_indices]).reshape(-1, 3, 3)
+                test_areas = np.array([shape_model[j].area for j in visible_indices])
+                test_normals = np.array([shape_model[j].normal for j in visible_indices])
 
-            view_factors = calculate_view_factors(subject_vertices, subject_normal, subject_area, test_vertices, test_areas, n_rays = 10000) # NOTE: n_rays can be increased for more accurate results
+                view_factors = calculate_view_factors(subject_vertices, subject_normal, subject_area, test_vertices, test_areas, n_rays = 10000) # NOTE: n_rays can be increased for more accurate results
 
-            if np.any(np.isnan(view_factors)) or np.any(np.isinf(view_factors)):
-                print(f"Warning: Invalid view factor for facet {i}")
-                print(f"View factors: {view_factors}")
-                print(f"Visible facets: {visible_indices}")
-            all_view_factors.append(view_factors)
+                if np.any(np.isnan(view_factors)) or np.any(np.isinf(view_factors)):
+                    print(f"Warning: Invalid view factor for facet {i}")
+                    print(f"View factors: {view_factors}")
+                    print(f"Visible facets: {visible_indices}")
+                all_view_factors.append(view_factors)
 
-        thermal_data.set_secondary_radiation_view_factors(all_view_factors)
+            thermal_data.set_secondary_radiation_view_factors(all_view_factors)
 
-        numba_view_factors = List()
-        for view_factors in thermal_data.secondary_radiation_view_factors:
-            numba_view_factors.append(np.array(view_factors, dtype=np.float64))
-        thermal_data.secondary_radiation_view_factors = numba_view_factors
-    else:
-        # Create an empty Numba List for view factors when self-heating is not included
-        numba_view_factors = List()
-        for _ in range(len(shape_model)):
-            numba_view_factors.append(np.array([], dtype=np.float64))
-        thermal_data.secondary_radiation_view_factors = numba_view_factors
+            numba_view_factors = List()
+            for view_factors in thermal_data.secondary_radiation_view_factors:
+                numba_view_factors.append(np.array(view_factors, dtype=np.float64))
+            thermal_data.secondary_radiation_view_factors = numba_view_factors
+        else:
+            # Create an empty Numba List for view factors when self-heating is not included
+            numba_view_factors = List()
+            for _ in range(len(shape_model)):
+                numba_view_factors.append(np.array([], dtype=np.float64))
+            thermal_data.secondary_radiation_view_factors = numba_view_factors
 
-    if plot_secondary_radiation_view_factors:
-        selected_facet = 1454  # Change this to the index of the facet you're interested in
-        
-        # Get the indices and view factors of contributing facets
-        contributing_indices = thermal_data.visible_facets[selected_facet]
-        contributing_view_factors = thermal_data.secondary_radiation_view_factors[selected_facet]
-        
-        # Create an array of zeros for all facets
-        contribution_data = np.zeros(len(shape_model))
-        
-        # Set the view factors for the contributing facets
-        contribution_data[contributing_indices] = 1
+        if plot_secondary_radiation_view_factors:
+            selected_facet = 1454  # Change this to the index of the facet you're interested in
+            
+            # Get the indices and view factors of contributing facets
+            contributing_indices = thermal_data.visible_facets[selected_facet]
+            contributing_view_factors = thermal_data.secondary_radiation_view_factors[selected_facet]
+            
+            # Create an array of zeros for all facets
+            contribution_data = np.zeros(len(shape_model))
+            
+            # Set the view factors for the contributing facets
+            contribution_data[contributing_indices] = 1
 
-        contribution_data[selected_facet] = 0.5
+            contribution_data[selected_facet] = 0.5
 
-        # Print contributing facets and their view factors
-        print(f"\nContributing facets for facet {selected_facet}:")
-        for index, view_factors in zip(contributing_indices, contributing_view_factors):
-            print(f"Facet {index}: view factor = {view_factors:.6f}")
-        print(f"Total number of contributing facets: {len(contributing_indices)}")
-        
-        print(f"Preparing visualization of contributing facets for facet {selected_facet}.")
-        animate_model(path_to_shape_model_file, contribution_data[:, np.newaxis], 
-                    simulation.rotation_axis, simulation.sunlight_direction, 1, 
-                    colour_map='viridis', plot_title=f'Contributing Facets for Facet {selected_facet}', 
-                    axis_label='View Factors Value', animation_frames=1, 
-                    save_animation=False, save_animation_name=f'contributing_facets_{selected_facet}.png', 
-                    background_colour='black')
-        
-    if plot_secondary_contributions:
-        # Calculate the sum of secondary radiation view factors for each facet
-        secondary_radiation_sum = np.array([np.sum(view_factors) for view_factors in thermal_data.secondary_radiation_view_factors])
+            # Print contributing facets and their view factors
+            print(f"\nContributing facets for facet {selected_facet}:")
+            for index, view_factors in zip(contributing_indices, contributing_view_factors):
+                print(f"Facet {index}: view factor = {view_factors:.6f}")
+            print(f"Total number of contributing facets: {len(contributing_indices)}")
+            
+            print(f"Preparing visualization of contributing facets for facet {selected_facet}.")
+            animate_model(path_to_shape_model_file, contribution_data[:, np.newaxis], 
+                        simulation.rotation_axis, simulation.sunlight_direction, 1, 
+                        colour_map='viridis', plot_title=f'Contributing Facets for Facet {selected_facet}', 
+                        axis_label='View Factors Value', animation_frames=1, 
+                        save_animation=False, save_animation_name=f'contributing_facets_{selected_facet}.png', 
+                        background_colour='black')
+            
+        if plot_secondary_contributions:
+            # Calculate the sum of secondary radiation view factors for each facet
+            secondary_radiation_sum = np.array([np.sum(view_factors) for view_factors in thermal_data.secondary_radiation_view_factors])
 
-        print("Preparing secondary radiation visualization.")
-        animate_model(path_to_shape_model_file, secondary_radiation_sum[:, np.newaxis], 
-                    simulation.rotation_axis, simulation.sunlight_direction, 1, 
-                    colour_map='viridis', plot_title='Secondary Radiation Contribution', 
-                    axis_label='Sum of View Factors', animation_frames=1, 
-                    save_animation=False, save_animation_name='secondary_radiation.png', 
-                    background_colour='black')
+            print("Preparing secondary radiation visualization.")
+            animate_model(path_to_shape_model_file, secondary_radiation_sum[:, np.newaxis], 
+                        simulation.rotation_axis, simulation.sunlight_direction, 1, 
+                        colour_map='viridis', plot_title='Secondary Radiation Contribution', 
+                        axis_label='Sum of View Factors', animation_frames=1, 
+                        save_animation=False, save_animation_name='secondary_radiation.png', 
+                        background_colour='black')
 
 
-    print(f"Running main simulation loop.\n")
-    start_time = time.time()
-    final_day_temperatures, final_day_temperatures_all_layers, final_timestep_temperatures, day, temperature_error = thermophysical_body_model(thermal_data, shape_model, simulation, path_to_shape_model_file)
-    end_time = time.time()
-    execution_time = end_time - start_time
+        print(f"Running main simulation loop.\n")
+        start_time = time.time()
+        final_day_temperatures, final_day_temperatures_all_layers, final_timestep_temperatures, day, temperature_error = thermophysical_body_model(thermal_data, shape_model, simulation, path_to_shape_model_file)
+        end_time = time.time()
+        execution_time = end_time - start_time
 
-    if final_timestep_temperatures is not None:
-        print(f"Convergence target achieved after {day} days.")
-        print(f"Final temperature error: {temperature_error / len(shape_model)} K")
-    else:
-        print(f"Model did not converge after {day} days.")
-        print(f"Final temperature error: {temperature_error / len(shape_model)} K")
+        if final_timestep_temperatures is not None:
+            print(f"Convergence target achieved after {day} days.")
+            print(f"Final temperature error: {temperature_error / len(shape_model)} K")
+        else:
+            print(f"Model did not converge after {day} days.")
+            print(f"Final temperature error: {temperature_error / len(shape_model)} K")
 
-    print(f"Execution time: {execution_time} seconds")
+        print(f"Execution time: {execution_time} seconds")
 
-    if plot_final_day_temp_distribution:
-        fig_final_temp_dist = plt.figure()
-        plt.plot(final_day_temperatures[facet_index])
-        plt.xlabel('Timestep')
-        plt.ylabel('Temperature (K)')
-        plt.title('Final day temperature distribution for all facets')
-        fig_final_temp_dist.show()
+        if plot_final_day_temp_distribution:
+            fig_final_temp_dist = plt.figure()
+            plt.plot(final_day_temperatures[facet_index])
+            plt.xlabel('Timestep')
+            plt.ylabel('Temperature (K)')
+            plt.title('Final day temperature distribution for all facets')
+            fig_final_temp_dist.show()
 
-    if plot_final_day_all_layers_temp_distribution:
-        fig_final_all_layers_temp_dist = plt.figure()
-        plt.plot(final_day_temperatures_all_layers[facet_index])
-        plt.xlabel('Timestep')
-        plt.ylabel('Temperature (K)')
-        plt.title('Final day temperature distribution for all layers in facet')
-        fig_final_all_layers_temp_dist.show()
+        if plot_final_day_all_layers_temp_distribution:
+            fig_final_all_layers_temp_dist = plt.figure()
+            plt.plot(final_day_temperatures_all_layers[facet_index])
+            plt.xlabel('Timestep')
+            plt.ylabel('Temperature (K)')
+            plt.title('Final day temperature distribution for all layers in facet')
+            fig_final_all_layers_temp_dist.show()
 
-    if plot_all_days_all_layers_temp_distribution:
-        fig_all_days_all_layers_temp_dist = plt.figure()
-        plt.plot(thermal_data.temperatures[facet_index, :, :])
-        plt.xlabel('Timestep')
-        plt.ylabel('Temperature (K)')
-        plt.title('Temperature distribution for all layers in facet for the full run')
-        fig_all_days_all_layers_temp_dist.show()
+        if plot_all_days_all_layers_temp_distribution:
+            fig_all_days_all_layers_temp_dist = plt.figure()
+            plt.plot(thermal_data.temperatures[facet_index, :, :])
+            plt.xlabel('Timestep')
+            plt.ylabel('Temperature (K)')
+            plt.title('Temperature distribution for all layers in facet for the full run')
+            fig_all_days_all_layers_temp_dist.show()
 
-    if plot_energy_terms:
-        fig_energy_terms = plt.figure()
-        plt.plot(shape_model[facet_index].unphysical_energy_loss[(day - 1) * simulation.timesteps_per_day:day * simulation.timesteps_per_day], label='Unphysical energy loss')
-        plt.plot(shape_model[facet_index].insolation_energy[(day - 1) * simulation.timesteps_per_day:day * simulation.timesteps_per_day], label='Insolation energy')
-        plt.plot(shape_model[facet_index].re_emitted_energy[(day - 1) * simulation.timesteps_per_day:day * simulation.timesteps_per_day], label='Re-emitted energy')
-        plt.plot(-shape_model[facet_index].surface_energy_change[(day - 1) * simulation.timesteps_per_day:day * simulation.timesteps_per_day], label='Surface energy change')
-        plt.plot(shape_model[facet_index].conducted_energy[(day - 1) * simulation.timesteps_per_day:day * simulation.timesteps_per_day], label='Conducted energy')
-        plt.legend()
-        plt.xlabel('Timestep')
-        plt.ylabel('Energy (J)')
-        plt.title('Energy terms for facet for the final day')
-        fig_energy_terms.show()
+        if plot_energy_terms:
+            fig_energy_terms = plt.figure()
+            plt.plot(shape_model[facet_index].unphysical_energy_loss[(day - 1) * simulation.timesteps_per_day:day * simulation.timesteps_per_day], label='Unphysical energy loss')
+            plt.plot(shape_model[facet_index].insolation_energy[(day - 1) * simulation.timesteps_per_day:day * simulation.timesteps_per_day], label='Insolation energy')
+            plt.plot(shape_model[facet_index].re_emitted_energy[(day - 1) * simulation.timesteps_per_day:day * simulation.timesteps_per_day], label='Re-emitted energy')
+            plt.plot(-shape_model[facet_index].surface_energy_change[(day - 1) * simulation.timesteps_per_day:day * simulation.timesteps_per_day], label='Surface energy change')
+            plt.plot(shape_model[facet_index].conducted_energy[(day - 1) * simulation.timesteps_per_day:day * simulation.timesteps_per_day], label='Conducted energy')
+            plt.legend()
+            plt.xlabel('Timestep')
+            plt.ylabel('Energy (J)')
+            plt.title('Energy terms for facet for the final day')
+            fig_energy_terms.show()
 
-    if plot_temp_distribution_for_final_day:
-        fig_final_day_temps = plt.figure()
-        plt.plot(thermal_data.temperatures[facet_index, (day - 1) * simulation.timesteps_per_day:day * simulation.timesteps_per_day, 0])
-        plt.xlabel('Timestep')
-        plt.ylabel('Temperature (K)')
-        plt.title('Temperature distribution for all layers in facet for the full run')
-        fig_final_day_temps.show()
+        if plot_temp_distribution_for_final_day:
+            fig_final_day_temps = plt.figure()
+            plt.plot(thermal_data.temperatures[facet_index, (day - 1) * simulation.timesteps_per_day:day * simulation.timesteps_per_day, 0])
+            plt.xlabel('Timestep')
+            plt.ylabel('Temperature (K)')
+            plt.title('Temperature distribution for all layers in facet for the full run')
+            fig_final_day_temps.show()
 
-    if animate_final_day_temp_distribution:
-        print(f"Preparing temperature animation.\n")
+        if animate_final_day_temp_distribution:
+            try:
+                logging.debug("Starting temperature distribution animation")
+                animate_model(path_to_shape_model_file, final_day_temperatures, simulation.rotation_axis, simulation.sunlight_direction, simulation.timesteps_per_day, colour_map='coolwarm', plot_title='Temperature distribution on the body', axis_label='Temperature (K)', animation_frames=200, save_animation=False, save_animation_name='temperature_animation.gif', background_colour = 'black')
+                logging.debug("Temperature distribution animation completed successfully")
+            except Exception as e:
+                logging.error(f"Error in temperature distribution animation: {str(e)}")
+                logging.error(f"Traceback: {traceback.format_exc()}")
 
-        animate_model(path_to_shape_model_file, final_day_temperatures, simulation.rotation_axis, simulation.sunlight_direction, simulation.timesteps_per_day, colour_map='coolwarm', plot_title='Temperature distribution on the body', axis_label='Temperature (K)', animation_frames=200, save_animation=False, save_animation_name='temperature_animation.gif', background_colour = 'black')
+        if plot_final_day_comparison:
+            print(f"Saving final day temperatures for facet to CSV file.\n")
+            np.savetxt("final_day_temperatures.csv", np.column_stack((np.linspace(0, 2 * np.pi, simulation.timesteps_per_day), final_day_temperatures[facet_index])), delimiter=',', header='Rotation angle (rad), Temperature (K)', comments='')
 
-    if plot_final_day_comparison:
-        print(f"Saving final day temperatures for facet to CSV file.\n")
-        np.savetxt("final_day_temperatures.csv", np.column_stack((np.linspace(0, 2 * np.pi, simulation.timesteps_per_day), final_day_temperatures[facet_index])), delimiter=',', header='Rotation angle (rad), Temperature (K)', comments='')
+            thermprojrs_data = np.loadtxt("thermprojrs_data.csv", delimiter=',', skiprows=1)
 
-        thermprojrs_data = np.loadtxt("thermprojrs_data.csv", delimiter=',', skiprows=1)
+            fig_model_comparison = plt.figure()
+            plt.plot(thermprojrs_data[:, 0], thermprojrs_data[:, 1], label='Thermprojrs')
+            plt.plot(np.linspace(0, 2 * np.pi, simulation.timesteps_per_day), final_day_temperatures[facet_index], label='This model')
+            plt.xlabel('Rotation angle (rad)')
+            plt.ylabel('Temperature (K)')
+            plt.title('Final day temperature distribution for facet')
+            plt.legend()
+            fig_model_comparison.show()
 
-        fig_model_comparison = plt.figure()
-        plt.plot(thermprojrs_data[:, 0], thermprojrs_data[:, 1], label='Thermprojrs')
-        plt.plot(np.linspace(0, 2 * np.pi, simulation.timesteps_per_day), final_day_temperatures[facet_index], label='This model')
-        plt.xlabel('Rotation angle (rad)')
-        plt.ylabel('Temperature (K)')
-        plt.title('Final day temperature distribution for facet')
-        plt.legend()
-        fig_model_comparison.show()
+            x_original = np.linspace(0, 2 * np.pi, simulation.timesteps_per_day)
+            x_new = np.linspace(0, 2 * np.pi, thermprojrs_data.shape[facet_index])
 
-        x_original = np.linspace(0, 2 * np.pi, simulation.timesteps_per_day)
-        x_new = np.linspace(0, 2 * np.pi, thermprojrs_data.shape[facet_index])
+            interp_func = interp1d(x_new, thermprojrs_data[:, 1], kind='linear')
+            thermprojrs_interpolated = interp_func(x_original)
 
-        interp_func = interp1d(x_new, thermprojrs_data[:, 1], kind='linear')
-        thermprojrs_interpolated = interp_func(x_original)
+            plt.plot(x_original, final_day_temperatures[facet_index] - thermprojrs_interpolated, label='This model')
+            plt.xlabel('Rotation angle (rad)')
+            plt.ylabel('Temperature difference (K)')
+            plt.title('Temperature difference between this model and Thermprojrs for facet')
+            plt.legend()
+            plt.show()
 
-        plt.plot(x_original, final_day_temperatures[facet_index] - thermprojrs_interpolated, label='This model')
-        plt.xlabel('Rotation angle (rad)')
-        plt.ylabel('Temperature difference (K)')
-        plt.title('Temperature difference between this model and Thermprojrs for facet')
-        plt.legend()
-        plt.show()
+            np.savetxt("final_day.csv", np.column_stack((x_original, final_day_temperatures[facet_index])), delimiter=',', header='Rotation angle (rad), Temperature (K)', comments='')
 
-        np.savetxt("final_day.csv", np.column_stack((x_original, final_day_temperatures[facet_index])), delimiter=',', header='Rotation angle (rad), Temperature (K)', comments='')
+        logging.debug("Main function completed successfully")
+        print(f"Model run complete.\n")
 
-    print(f"Model run complete.\n")
+    except Exception as e:
+        logging.error(f"An error occurred in main script: {str(e)}")
+        logging.error(f"Traceback: {traceback.format_exc()}")
+        print(f"An error occurred. Please check the log file for details.")
 
 # Call the main program to start execution
 if __name__ == "__main__":
+    logging.debug("Starting script execution")
     cProfile.run('main()', 'output.prof')
     
     # Print the profiling results
     with open('profiling_output.txt', 'w') as f:
         p = pstats.Stats('output.prof', stream=f)
         p.sort_stats('cumulative').print_stats()
+    
+    logging.debug("Script execution completed")
