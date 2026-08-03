@@ -30,7 +30,7 @@ Use and Integrated Development Environment (IDE) for example VS Code (download a
 If your shape model is not in ASCII .stl format, you can use Blender (download at https://www.blender.org/) to convert it.
 
 ## Model Architecture
-See below flowchart from my 2024 EPSC poster presentation (https://presentations.copernicus.org/EPSC2024/EPSC2024-1121_presentation.pdf) which gives more detail on the model architecture. 
+See below flowchart from the TEMPEST paper (preprint) which gives more detail on the model architecture. 
 
 ![TEMPEST Flowchart](documentation/flowchart.jpg)
 
