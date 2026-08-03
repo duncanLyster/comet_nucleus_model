@@ -71,6 +71,9 @@ DGL_KS_comparison_outputs/
 # Ignore deprecated TEMPEST_RAD scripts and files
 TEMPEST_RAD/deprecated/
 
+# Ignore generated roughness LUT grids (multi-GB .h5 sets + their diagnostics)
+TEMPEST_RAD/lut_output*/
+
 # Ignore ROI backup notebook
 notebooks/region_of_interest_analysis_backup.ipynb
 
