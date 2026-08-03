@@ -40,8 +40,8 @@ def calculate_insolation(thermal_data, shape_model, simulation, config):
         
         # Try to load from cache
         n_facets = len(shape_model)
-        shape_model_path = config.path_to_shape_model_file if hasattr(config, 'path_to_shape_model_file') else ""
-        
+        shape_model_path = (config.path_to_shape_model_file if hasattr(config, 'path_to_shape_model_file') else "") or ""
+
         cached_insolation = cache.load_insolation(
             config, simulation, shape_model_path, n_facets, config.silent_mode
         )
@@ -128,7 +128,7 @@ def calculate_insolation(thermal_data, shape_model, simulation, config):
     
     # Save to cache if enabled
     if config.use_insolation_cache and cache is not None:
-        shape_model_path = config.path_to_shape_model_file if hasattr(config, 'path_to_shape_model_file') else ""
+        shape_model_path = (config.path_to_shape_model_file if hasattr(config, 'path_to_shape_model_file') else "") or ""
         cache.save_insolation(
             thermal_data.insolation, config, simulation, shape_model_path, config.silent_mode
         )
@@ -302,7 +302,8 @@ def calculate_brdf_values(chunk_normals, chunk_positions, all_normals, all_posit
     return brdf_values
 
 def process_scattering_chunk(start_idx, end_idx, chunk_input_light, chunk_visible_facets,
-                             chunk_view_factors, timesteps_per_day, albedo, iteration,
+                             chunk_view_factors, chunk_areas, all_areas,
+                             timesteps_per_day, albedo, iteration,
                              brdf_lut=None, chunk_normals=None, chunk_positions=None,
                              all_normals=None, all_positions=None,
                              rotation_matrices=None, rotated_sunlight_directions=None):
@@ -334,17 +335,21 @@ def process_scattering_chunk(start_idx, end_idx, chunk_input_light, chunk_visibl
 
     for i in range(start_idx, end_idx):
         local_i = i - start_idx
-        visible_facets = chunk_visible_facets[local_i]
-        view_factors   = chunk_view_factors[local_i]
-
-        for t in range(timesteps_per_day):
-            current_light = chunk_input_light[local_i, t]
-            if current_light > 0:
-                for j, (vf_idx, vf) in enumerate(zip(visible_facets, view_factors)):
-                    brdf = brdf_values[i][j, t] if brdf_values is not None else 1.0
-                    compact_scattered[dest_to_local[vf_idx], t] += (
-                        brdf * current_light * vf * albedo / np.pi
-                    )
+        visible_facets = np.asarray(chunk_visible_facets[local_i])
+        view_factors   = np.asarray(chunk_view_factors[local_i], dtype=np.float64)
+        if len(visible_facets) == 0:
+            continue
+        area_i = chunk_areas[local_i]
+        # absorbed flux at the destination: albedo * E_i(t) * F_ij * A_i / A_j
+        # (F_ij is the diffuse view factor; A_i F_ij = A_j F_ji reciprocity)
+        coef = albedo * view_factors * area_i / all_areas[visible_facets]   # (n_vis,)
+        dloc = np.array([dest_to_local[v] for v in visible_facets])
+        src = chunk_input_light[local_i]                                    # (T,)
+        if brdf_values is not None:
+            contrib = coef[:, None] * brdf_values[i] * src[None, :]         # (n_vis, T)
+        else:
+            contrib = coef[:, None] * src[None, :]
+        np.add.at(compact_scattered, dloc, contrib)
 
     return dest_indices, compact_scattered
 
@@ -376,6 +381,7 @@ def apply_scattering(thermal_data, shape_model, simulation, config,
     # are passed to workers so they can rotate target facets on-the-fly.
     all_normals   = np.array([facet.normal   for facet in shape_model], dtype=np.float64)
     all_positions = np.array([facet.position for facet in shape_model], dtype=np.float64)
+    all_areas     = np.array([facet.area     for facet in shape_model], dtype=np.float64)
 
     # Convert lists to numpy arrays
     visible_facets_list = [np.array(x) for x in thermal_data.visible_facets]
@@ -414,6 +420,8 @@ def apply_scattering(thermal_data, shape_model, simulation, config,
                 input_light[start_idx:end_idx],              # Only this chunk's input
                 visible_facets_list[start_idx:end_idx],      # Only this chunk's visible facets
                 view_factors_list[start_idx:end_idx],        # Only this chunk's view factors
+                all_areas[start_idx:end_idx],                # Source facet areas
+                all_areas,                                   # Destination facet areas
                 simulation.timesteps_per_day,
                 simulation.albedo,
                 iteration,
