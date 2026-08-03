@@ -171,8 +171,58 @@ def compute_geometry(facets, sun_vec, obs_vec, rot_axis):
         # Sun along rotation axis (polar incidence) - phase is ill-defined
         global_phase = 0.0
     
-    # Return the SAME phase for all facets
-    sun_phases = np.full(n_facets, global_phase)
+    # --- LUT phase query mode -------------------------------------------------
+    # The LUT time axis is the CRATER'S LOCAL SOLAR TIME with NOON AT PHASE 0
+    # (verified 2026-07-05 against the generator's sun vectors: at t=0 the sun
+    # is along the aperture normal, sunset at 90, midnight at 180, sunrise at
+    # 270; the smooth reference peaks at ~17 deg = noon + thermal lag).  Each
+    # facet must be queried at its OWN local hour angle: the crater's internal
+    # shadow/temperature pattern depends on where the facet is in its day, not
+    # on any global clock.  The pre-2026-07-05 mapping added a spurious 180 deg
+    # (mod(180+h)) which read the MIDNIGHT cavity state for noon facets - the
+    # night-warm cavity (angle-flat R~1.45) masqueraded as beaming and erased
+    # the dayside anti-sunward dimming (R~0.5-0.75) entirely, so the modelled
+    # beaming phase function could never dip below 1 at any phase angle.
+    # Modes (env LUT_PHASE_MODE): 'local' (default, correct) | 'localneg'
+    # (hour-angle sign A/B) | 'legacy180' (the buggy 180-offset mapping, kept
+    # for comparison) | 'global' (frozen global clock: one phase for every
+    # facet, valid only for a single-facet/unresolved target).
+    import os as _os
+    _mode = _os.environ.get('LUT_PHASE_MODE', 'local')
+    if _mode == 'global':
+        sun_phases = np.full(n_facets, global_phase)
+    else:
+        # On a lumpy body the crater's diurnal cycle follows the facet NORMAL,
+        # not the facet's position: a facet behaves like a horizontal element
+        # at lat_eff = arcsin(n.axis) whose longitude is the normal's azimuth
+        # (then cos(incidence) = cos(lat_eff)cos(dec)cos(H)+..., matching the
+        # LUT's equatorial-crater/sun-declination convention).
+        n_proj = normals - np.outer(np.dot(normals, rot_axis), rot_axis)
+        nn = np.maximum(np.linalg.norm(n_proj, axis=1), 1e-12)
+        n_proj = n_proj / nn[:, np.newaxis]
+        ref_proj_l = np.array([1.0, 0.0, 0.0])
+        ref_proj_l = ref_proj_l - np.dot(ref_proj_l, rot_axis) * rot_axis
+        if np.linalg.norm(ref_proj_l) > 1e-6:
+            ref_proj_l = ref_proj_l / np.linalg.norm(ref_proj_l)
+        else:
+            ref_proj_l = np.array([0.0, 1.0, 0.0])
+        cosf = np.clip(n_proj @ ref_proj_l, -1.0, 1.0)
+        ang = np.degrees(np.arccos(cosf))
+        sgn = np.einsum('ij,j->i', np.cross(np.broadcast_to(ref_proj_l, n_proj.shape), n_proj), rot_axis)
+        facet_lon = np.where(sgn < 0, 360.0 - ang, ang)
+        # hour angle: facet is at local noon when its normal's longitude ==
+        # subsolar longitude (global_phase); tsteps() convention: sun longitude
+        # increases with sim time, so afternoon = (lam - lon) > 0.
+        if _mode == 'localneg':
+            h = facet_lon - global_phase
+        else:
+            h = global_phase - facet_lon
+        if _mode == 'legacy180':
+            sun_phases = np.mod(180.0 + h, 360.0)
+        else:
+            sun_phases = np.mod(h, 360.0)
+        # effective latitude from the NORMAL (diurnal amplitude of a tilted facet)
+        latitudes = np.abs(np.degrees(np.arcsin(np.clip(np.dot(normals, rot_axis), -1.0, 1.0))))
         
     # 4. Relative Azimuth
     # Angle between Projected Sun and Projected Observer on Facet Plane

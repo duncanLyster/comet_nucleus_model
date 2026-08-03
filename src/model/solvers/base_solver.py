@@ -36,6 +36,24 @@ class TemperatureSolver:
 
         conditional_print(config.silent_mode, f"Initial temperatures calculated for {thermal_data.temperatures.shape[0]} facets.")
 
+        # Self-heating-aware equilibrium: iterate T_i^4 = <ins_i>/(eps*sigma) + sum_j F_ij T_j^4.
+        # Without this, concave geometry (crater kernels, contact-binary necks) is initialised
+        # far below its equilibrium and high-TI runs relax so slowly that the day-to-day
+        # convergence test can pass while the surface is still cold.
+        tvfs = getattr(thermal_data, 'thermal_view_factors', None)
+        if config.include_self_heating and tvfs is not None and len(tvfs) == len(results) \
+                and any(len(v) > 0 for v in tvfs):
+            drive_t4 = np.array([max(r, 50.0) ** 4.0 for r in results])   # <ins>/(eps*sigma)
+            mean_t4 = drive_t4.copy()
+            vis = thermal_data.visible_facets
+            for _ in range(30):
+                irr = np.array([np.sum(mean_t4[np.asarray(vis[i])] * np.asarray(tvfs[i]))
+                                if len(tvfs[i]) else 0.0 for i in range(len(results))])
+                mean_t4 = drive_t4 + irr
+            results = [max(t4 ** 0.25, 50.0) for t4 in mean_t4]
+            conditional_print(config.silent_mode,
+                              "Initial temperatures include self-heating equilibrium.")
+
         # Update both surface and layer temperatures with initial values
         for i, temperature in conditional_tqdm(enumerate(results), config.silent_mode, total=len(results), desc='Saving temps'):
             thermal_data.temperatures[i, :] = temperature

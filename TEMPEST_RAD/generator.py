@@ -127,13 +127,37 @@ SOLAR_LUMINOSITY = 3.828e26    # Solar luminosity (W)
 
 # Subsurface thermal model
 N_LAYERS = 40           # Number of subsurface layers
-MAX_DAYS = 50           # Maximum days to reach thermal equilibrium
-MIN_DAYS = 3            # Minimum days before checking convergence
-CONVERGENCE_TARGET = 1  # Convergence threshold (K for mean temperature change)
+MAX_DAYS = 80           # Maximum days to reach thermal equilibrium
+MIN_DAYS = 5            # Minimum days before checking convergence
+CONVERGENCE_TARGET = 0.2  # Convergence threshold (K for mean temperature change);
+                          # tight because high-Theta cavity runs relax slowly and a
+                          # loose test can pass while the crater is still warming
 
 # ============================================================================
 # End of User Configuration
 # ============================================================================
+
+# --- Environment overrides --------------------------------------------------
+# joblib's loky workers RE-IMPORT this module, so monkey-patched module globals
+# in a launcher script are silently lost in the workers (the parent still sees
+# the patched values, the workers see the defaults, and the returned grids no
+# longer match the allocated output arrays).  Env vars survive the fork/spawn,
+# so scripted runs must use these instead of (or in addition to) patching.
+SIM_TIMESTEPS    = int(os.environ.get('LUT_SIM_TIMESTEPS', SIM_TIMESTEPS))
+LUT_TIMESTEPS    = int(os.environ.get('LUT_LUT_TIMESTEPS', LUT_TIMESTEPS))
+CRATER_SUBFACETS = int(os.environ.get('LUT_CRATER_SUBFACETS', CRATER_SUBFACETS))
+VIEW_FACTOR_RAYS = int(os.environ.get('LUT_VIEW_FACTOR_RAYS', VIEW_FACTOR_RAYS))
+N_JOBS           = int(os.environ.get('LUT_N_JOBS', N_JOBS))
+OUTPUT_DIR       = os.environ.get('LUT_OUTPUT_DIR', OUTPUT_DIR)
+OUTPUT_PREFIX    = os.environ.get('LUT_OUTPUT_PREFIX', OUTPUT_PREFIX)
+if 'LUT_THETA_VALUES' in os.environ:
+    THETA_VALUES = np.array([float(x) for x in os.environ['LUT_THETA_VALUES'].split(',')])
+# crater opening angle (90 = hemisphere; >90 = beyond-hemispherical / deeper cavity)
+if 'LUT_OPENING_ANGLES' in os.environ:
+    OPENING_ANGLES = [float(x) for x in os.environ['LUT_OPENING_ANGLES'].split(',')]
+# inter-facet scattering iterations inside the crater (1 = single bounce; higher =
+# converges the multiple-scattering absorption/beaming enhancement)
+N_SCATTERS_ENV = int(os.environ.get('LUT_N_SCATTERS', '1'))
 
 def planck_function(wavelength_um, temp_k):
     """
@@ -258,8 +282,11 @@ class ReferenceConfig(Config):
             'min_days': MIN_DAYS,
             'n_layers': N_LAYERS,
             'include_shadowing': True,
-            'n_scatters': 0, 
+            'n_scatters': N_SCATTERS_ENV,
             'include_self_heating': True,
+            # thermal VFs are cheap (EPF multiply) and their cache was poisoned by
+            # the missing set_secondary_radiation_view_factors call above
+            'force_recalculate_thermal_view_factors': True,
             'n_jobs': N_JOBS,  # Parallel workers for view factor calculation etc.
             'vf_rays': 10000,  # Not used (overridden in simulate_crater_diurnal_cycle)
             'intra_facet_scatters': 2,
@@ -654,15 +681,18 @@ def process_single_case(theta, opening_angle, lat, config, precomputed):
                         # at extreme viewing geometries (e~89°) or Wien-tail conditions
                         result_grid[t_idx, i_w, i_e, i_a] = np.clip(ratio, 0.0, 50.0)
 
-    # --- PER-TIMESTEP BOLOMETRIC NORMALIZATION ---
-    # A single scalar α(t) is applied to all wavelengths simultaneously, so
-    # the Planck-weighted bolometric angular mean of R equals 1.0 per timestep.
-    # This conserves total emitted power while leaving the spectral shape of R
-    # free, preserving the inter-wavelength redistribution driven by the T^4
-    # non-linearity: hot sub-facets contribute disproportionately at Wien-regime
-    # wavelengths, and per-wavelength normalisation would erase this signal.
+    # --- PER-TIMESTEP BOLOMETRIC CLOSURE DIAGNOSTIC alpha(t) ---
+    # alpha(t) is the scalar that WOULD force the Planck-weighted bolometric
+    # angular mean of R to 1.0 at each timestep.  Historically it was APPLIED to
+    # the LUT; that was masking a missing-self-heating bug (alpha ~ 2.1).  With
+    # self-heating, intra-crater scattering, and warm-start convergence fixed,
+    # energy closure is inherent in the simulation, and forcing INSTANTANEOUS
+    # closure against the smooth reference would erase genuine diurnal beaming
+    # (the cavity is really warmer than the smooth facet at night and lags it in
+    # the morning).  alpha is therefore recorded as a diagnostic only; set
+    # LUT_APPLY_NORM=1 to restore the old behaviour for comparison runs.
     #
-    # Constraint: ∑_λ w_λ · ∫ R(λ,e,φ) cos(e) sin(e) de dφ = π · ∑_λ w_λ
+    # Closure metric: ∑_λ w_λ · ∫ R(λ,e,φ) cos(e) sin(e) de dφ vs π · ∑_λ w_λ
     #             w_λ = B(λ, T_smooth) · Δλ   (Planck-weighted bandwidth)
     wave_arr = np.array(WAVELENGTHS_MICRONS)
     dwave = np.gradient(wave_arr)
@@ -687,7 +717,8 @@ def process_single_case(theta, opening_angle, lat, config, precomputed):
 
         expected = planck_total * ref_integral  # π · ∑ w_λ
         alpha = expected / total_weighted if total_weighted > 1e-15 else 1.0
-        result_grid[t_idx, :, :, :] *= alpha
+        if os.environ.get('LUT_APPLY_NORM', '0') == '1':
+            result_grid[t_idx, :, :, :] *= alpha
         norm_factors_t[t_idx] = alpha
 
     # Diagnostic: average normalization factor across all timesteps
@@ -978,7 +1009,13 @@ def main():
     cached_all_view_factors = calculate_all_view_factors(shape_model, thermal_data, config, VIEW_FACTOR_RAYS)
     vf_mid = time.time()
     print(f"  [1/3] Done ({vf_mid - vf_start:.1f}s)")
-    
+
+    # calculate_thermal_view_factors reads thermal_data.secondary_radiation_view_factors;
+    # without this the thermal VFs are all empty and the crater solve runs with NO
+    # self-heating (a hemispherical cavity then loses exactly half its emitted power
+    # out of the energy budget -> the alpha~2 normalisation factors).
+    thermal_data.set_secondary_radiation_view_factors(cached_all_view_factors)
+
     print(f"  [2/3] Computing thermal view factors...")
     cached_thermal_view_factors = calculate_thermal_view_factors(shape_model, thermal_data, config)
     vf_elapsed = time.time() - vf_start

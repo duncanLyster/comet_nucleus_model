@@ -141,39 +141,41 @@ def calculate_view_factors(subject_vertices, subject_normal, subject_area, test_
     '''
 
     ray_sources = random_points_in_triangle(subject_vertices[0], subject_vertices[1], subject_vertices[2], n_rays)
-    
-    ray_directions = np.random.randn(n_rays, 3)
+
+    # Cosine-weighted (Lambertian) direction sampling: d = normalize(n_hat + u) with
+    # u uniform on the unit sphere gives p(d) = cos(theta)/pi, so the hit fraction is
+    # the diffuse view factor F_ij directly.  (Uniform solid-angle sampling instead
+    # measures Omega_j/2pi, which under-weights face-on exchange by up to 2x and is
+    # NOT a view factor; the EPF tables assume Lambertian-relative weighting.)
+    ray_directions = np.empty((n_rays, 3))
     for i in prange(n_rays):
-        ray_directions[i] = normalize_vector(ray_directions[i])
-    
-    valid_directions = np.zeros(n_rays, dtype=np.bool_)
-    for i in prange(n_rays):
-        valid_directions[i] = np.dot(ray_directions[i], subject_normal) > 0
-    
-    valid_count = np.sum(valid_directions)
-    while valid_count < n_rays:
-        additional_rays_needed = n_rays - valid_count
-        additional_ray_directions = np.random.randn(additional_rays_needed, 3)
-        for i in range(additional_rays_needed):
-            additional_ray_directions[i] = normalize_vector(additional_ray_directions[i])
-        
-        for i in range(additional_rays_needed):
-            if np.dot(additional_ray_directions[i], subject_normal) > 0:
-                ray_directions[valid_count] = additional_ray_directions[i]
-                valid_count += 1
-                if valid_count == n_rays:
-                    break
-    
+        good = False
+        while not good:
+            ux = np.random.normal(0.0, 1.0)
+            uy = np.random.normal(0.0, 1.0)
+            uz = np.random.normal(0.0, 1.0)
+            un = (ux * ux + uy * uy + uz * uz) ** 0.5
+            if un < 1e-12:
+                continue
+            dx = ux / un + subject_normal[0]
+            dy = uy / un + subject_normal[1]
+            dz = uz / un + subject_normal[2]
+            dn = (dx * dx + dy * dy + dz * dz) ** 0.5
+            if dn > 1e-9:
+                ray_directions[i, 0] = dx / dn
+                ray_directions[i, 1] = dy / dn
+                ray_directions[i, 2] = dz / dn
+                good = True
+
     intersections = np.zeros((n_rays, len(test_vertices)), dtype=np.bool_)
     for i in prange(n_rays):
         ray_origin = ray_sources[i]
         ray_dir = ray_directions[i]
         intersect, _ = rays_triangles_intersection(ray_origin, ray_dir.reshape(1, 3), test_vertices)
         intersections[i] = intersect[0]
-    
-    view_factors = np.sum(intersections, axis=0).astype(np.float64) / n_rays * subject_area / test_areas
-    view_factors = view_factors * (test_areas / subject_area)
-    
+
+    view_factors = np.sum(intersections, axis=0).astype(np.float64) / n_rays
+
     return view_factors
 
 def process_view_factors_chunk(all_vertices, all_normals, all_areas, chunk_visible_facets, 
