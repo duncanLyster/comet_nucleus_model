@@ -110,10 +110,28 @@ class RoughnessLUT:
                         self.spectral_mode = True
                         self.axes['wavelength'] = wave_axis
 
-            # Handle NaNs
+            # Handle accidental NaNs (a failed (theta, lat) cell) by filling with 1.
             if np.isnan(lut_subset).any():
                 lut_subset = np.nan_to_num(lut_subset, nan=1.0)
-                
+
+            # ...but the e = 90 deg row is UNDEFINED by construction, not missing:
+            # the smooth reference projects to zero area there, so R = 0/0.  The
+            # generator used to store 1.0 in that row, which put a step at the limb
+            # (R falls to ~0.45 by e = 87.5 deg and then jumped back to exactly 1).
+            # Blank it to NaN so the interpolator refuses the cell rather than
+            # silently returning a fabricated value.  Applied at load time so it
+            # also corrects the existing LUT sets without regenerating them; EMI_CAP
+            # in get_correction_factors() keeps every query well clear of it.
+            # Axis order is (..., emission, azimuth) in both spectral and
+            # single-wavelength modes, so emission is always second from last.
+            i_emi = len(points) - 2
+            limb = np.isclose(np.asarray(points[i_emi], dtype=float), 90.0)
+            if limb.any():
+                sl = [slice(None)] * lut_subset.ndim
+                sl[i_emi] = np.where(limb)[0]
+                lut_subset = np.array(lut_subset, dtype=float, copy=True)
+                lut_subset[tuple(sl)] = np.nan
+
             self.interpolator = RegularGridInterpolator(
                 points, lut_subset, bounds_error=False, fill_value=None
             )
@@ -141,13 +159,29 @@ class RoughnessLUT:
         latitudes = np.abs(latitudes)
         
         # Cap emission angle to avoid limb divergence.
-        # The ratio R = I_rough / I_smooth diverges as emission -> 90° because
-        # the Lambertian denominator cos(e) -> 0 while the rough radiance stays
-        # finite.  The last LUT grid point (e=89°) absorbs this divergence and
-        # has values 10-90x, which are mathematically correct for the ratio but
-        # create unphysical per-pixel temperatures.  Capping at 80° keeps us in
-        # the well-behaved regime.  Limb facets beyond 80° contribute
-        # negligibly to disk-integrated flux (cos 80° = 0.17).
+        # The ratio R = I_rough / I_smooth is ill-conditioned as emission -> 90°
+        # because the Lambertian denominator cos(e) -> 0 while the rough radiance
+        # stays finite, and the e = 90° row is undefined outright (blanked to NaN
+        # above).  Capping at 80° keeps queries in the well-behaved regime; limb
+        # facets beyond 80° contribute negligibly to disk-integrated flux
+        # (cos 80° = 0.17).
+        #
+        # 80° is now justified rather than merely convenient.  An exact test —
+        # for an ISOTHERMAL crater the ratio must be 1 at every angle, since a ray
+        # entering a convex cavity's aperture strikes the interior exactly once,
+        # so sum_visible A_i cos(theta_i) == A_aperture cos(e) — gives a pure
+        # discretisation error of (200 / 500 / 1000 / 2000 subfacets):
+        #     e <= 50°:  <=0.5% / <=0.2% / <=0.1% / <=0.1%
+        #     e  = 70°:   -3.1% /   1.2% /   0.3% /   0.3%
+        #     e  = 80°:    3.0% /  -0.7% /   0.4% /   0.1%
+        #     e  = 85°:   14.2% / -11.1% /   4.7% /  -1.7%
+        #     e  = 87.5°: -3.5% / -16.5% /  10.2% / -11.8%
+        # i.e. subdividing converges cleanly up to ~80° but NOT beyond it: the
+        # binary centroid visibility test cannot converge where only a handful of
+        # subfacets are visible and cos(theta) -> 0.  Magri et al. (2018, §4.3)
+        # diagnose the same "on/off" limitation in SHERMAN.  Fixing e > 80° needs
+        # area-weighted partial visibility, not more facets.
+        # See private/dinkinesh_flyby/analysis/.../run_lut_geometry_convergence.py
         EMI_CAP = 80.0
         emissions = np.minimum(emissions, EMI_CAP)
         

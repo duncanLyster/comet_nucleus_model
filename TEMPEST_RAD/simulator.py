@@ -8,13 +8,13 @@ Usage Examples:
 
 1. Spectral Mode (Single Wavelength):
    python TEMPEST_RAD/simulator.py --config private/data/config/moon/moon_config.yaml \
-                                   --temps output/run_latest/ \
+                                   --temps output/runs/run_latest/ \
                                    --time 12.0 --wavelength 10.0 --phase 30.0 \
                                    --roughness_rms_angle 20.0
 
 2. Bolometric Mode (Integrated Brightness Temperature + Wireframe):
    python TEMPEST_RAD/simulator.py --config private/data/config/moon/moon_config.yaml \
-                                   --temps output/run_latest/ \
+                                   --temps output/runs/run_latest/ \
                                    --mode bolometric --wireframe \
                                    --time 6.0 --phase 45.0
 

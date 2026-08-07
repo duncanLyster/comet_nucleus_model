@@ -1,9 +1,16 @@
 import json
 import numpy as np
 import os
+import sys
 from datetime import datetime
 
-from animate_model import animate_model
+# Allow running this file directly (python src/utilities/plotting/run_local_animations.py)
+# without relying on PYTHONPATH being set by direnv.
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from src.utilities.plotting.animate_model import animate_model
 
 # Map-style playback options:
 # - Center the mesh on the origin (useful for small surface patches saved in body-centric coordinates)

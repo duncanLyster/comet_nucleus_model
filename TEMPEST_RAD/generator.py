@@ -155,6 +155,10 @@ if 'LUT_THETA_VALUES' in os.environ:
 # crater opening angle (90 = hemisphere; >90 = beyond-hemispherical / deeper cavity)
 if 'LUT_OPENING_ANGLES' in os.environ:
     OPENING_ANGLES = [float(x) for x in os.environ['LUT_OPENING_ANGLES'].split(',')]
+# restrict the latitude grid — for single-latitude convergence/benchmark runs
+# (a full 37-latitude grid at high subfacet counts is a multi-hour job)
+if 'LUT_LATITUDE_VALUES' in os.environ:
+    LATITUDE_VALUES = np.array([float(x) for x in os.environ['LUT_LATITUDE_VALUES'].split(',')])
 # inter-facet scattering iterations inside the crater (1 = single bounce; higher =
 # converges the multiple-scattering absorption/beaming enhancement)
 N_SCATTERS_ENV = int(os.environ.get('LUT_N_SCATTERS', '1'))
@@ -340,7 +344,8 @@ def rotate_to_lat(vector, lat_degrees):
     ])
     return np.dot(Ry, vector)
 
-def simulate_crater_diurnal_cycle(theta, opening_angle, latitude, config, n_timesteps, precomputed):
+def simulate_crater_diurnal_cycle(theta, opening_angle, latitude, config, n_timesteps,
+                                  precomputed, return_thermal_data=False):
     """
     Run a full diurnal simulation for a single crater configuration.
     Uses pre-computed geometry (mesh, view factors) to avoid redundant setup.
@@ -512,7 +517,14 @@ def simulate_crater_diurnal_cycle(theta, opening_angle, latitude, config, n_time
         s_body = np.dot(rot.T, simulation.sunlight_direction)
         sun_vectors_body[t] = s_body / np.linalg.norm(s_body)
 
-    # Return temperatures and sun vectors (geometry comes from precomputed dict)
+    # Return temperatures and sun vectors (geometry comes from precomputed dict).
+    # return_thermal_data adds the solved ThermalData as a 4th element, so callers
+    # can reach the per-subfacet insolation (needed to reproduce SCATTERED optical
+    # flux, e.g. the Magri et al. 2018 Table A1 bolometric row, which validates the
+    # crater geometry and scattering with no thermal physics involved).  Default
+    # False keeps the 3-tuple that process_single_case unpacks.
+    if return_thermal_data:
+        return rough_temps, smooth_temps, sun_vectors_body, thermal_data
     return rough_temps, smooth_temps, sun_vectors_body
 
 
@@ -673,8 +685,17 @@ def process_single_case(theta, opening_angle, lat, config, precomputed):
                         smooth_intensity = rad_smooth_val * aperture_area * cos_e
 
                     # Store radiance ratio: R = I_rough / I_smooth = L_rough / L_smooth
-                    if smooth_intensity < 1e-15:
-                        result_grid[t_idx, i_w, i_e, i_a] = 1.0 # Fallback
+                    if cos_e < 1e-12:
+                        # Grazing limb (e = 90°): the smooth reference projects to
+                        # zero area, so R = 0/0 is genuinely UNDEFINED, not 1.
+                        # Storing 1.0 here (the old behaviour) put a spurious step in
+                        # the last row — R falls to ~0.45 by e = 87.5° and then jumped
+                        # back to exactly 1.  NaN makes the interpolator refuse the
+                        # cell instead; queries are held below EMI_CAP in lut.py so it
+                        # is never reached in practice.
+                        result_grid[t_idx, i_w, i_e, i_a] = np.nan
+                    elif smooth_intensity < 1e-15:
+                        result_grid[t_idx, i_w, i_e, i_a] = 1.0  # cold-night fallback
                     else:
                         ratio = rough_intensity / smooth_intensity
                         # Clamp to physical range to avoid interpolation artifacts
