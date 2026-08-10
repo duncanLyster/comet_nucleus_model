@@ -4,6 +4,30 @@ import numpy as np
 from src.utilities.locations import Locations
 
 class Simulation:
+    """
+    Container for the physical parameters of a run.
+
+    Only the *independent* inputs (thermal_inertia, density,
+    specific_heat_capacity, rotation_period_hours, n_layers, solar_distance_au,
+    and an optional timesteps_per_day override) are stored as attributes.
+    Everything derived from them -- delta_t, angular_velocity, skin_depth,
+    layer_thickness, the conductivity and diffusivity -- is a read-only
+    @property evaluated on read.
+
+    This matters because callers routinely mutate a Simulation after
+    construction (e.g. the roughness LUT generator sweeps thermal inertia and
+    timestep count on a single object). When the derived quantities were plain
+    attributes computed once in __init__, such a mutation left them stale: in
+    particular delta_t kept the value implied by the *adaptive* timestep count,
+    so the integration advanced by the wrong step and the effective rotation
+    period became delta_t * timesteps_per_day rather than the true period.
+    Deriving on read makes that class of bug unrepresentable.
+    """
+
+    # Optional user/caller override of the adaptive timestep count. Class-level
+    # default so the timesteps_per_day property is safe to read at any point.
+    _timesteps_per_day_override = None
+
     def __init__(self, config):
         """
         Initialize the simulation using the provided Config object.
@@ -15,69 +39,103 @@ class Simulation:
         """
         Load configuration directly from the Config object.
         """
+        self._timesteps_per_day_override = None
+
         # Assign configuration to attributes, converting lists to numpy arrays as needed
+        # (a 'timesteps_per_day' key here goes through the property setter below)
         for key, value in self.config.config_data.items():
             if isinstance(value, list):
                 value = np.array(value)
             setattr(self, key, value)
-        
-        # Initialization calculations based on the loaded parameters
-        self.solar_distance_m = self.solar_distance_au * 1.496e11  # Convert AU to meters
-        self.rotation_period_s = self.rotation_period_hours * 3600  # Convert hours to seconds
-        self.angular_velocity = (2 * np.pi) / self.rotation_period_s
-        self.thermal_conductivity = (self.thermal_inertia**2 / (self.density * self.specific_heat_capacity))
-        self.skin_depth = (self.thermal_conductivity / (self.density * self.specific_heat_capacity * self.angular_velocity)) ** 0.5
-        self.layer_thickness = 8 * self.skin_depth / self.n_layers
-        self.thermal_diffusivity = self.thermal_conductivity / (self.density * self.specific_heat_capacity)
-        self.timesteps_per_day = self.calculate_adaptive_timesteps() # Adaptive timestep for low thermal inertia stability
-        self.delta_t = self.rotation_period_s / self.timesteps_per_day
-        
+
         # Compute rotation axis vector
         self._compute_rotation_axis()
 
+        # Report a config-specified timestep count that is unsafe for the explicit solver
+        self._warn_if_cfl_violated()
+
+    # --- Derived quantities -------------------------------------------------
+    # All computed on read, so they can never go stale when an input changes.
+
+    @property
+    def solar_distance_m(self):
+        """Heliocentric distance in metres."""
+        return self.solar_distance_au * 1.496e11
+
+    @property
+    def rotation_period_s(self):
+        """Rotation period in seconds."""
+        return self.rotation_period_hours * 3600
+
+    @property
+    def angular_velocity(self):
+        """Rotation rate omega (rad/s)."""
+        return (2 * np.pi) / self.rotation_period_s
+
+    @property
+    def thermal_conductivity(self):
+        """k, from the thermal inertia Gamma = sqrt(k rho c)."""
+        return (self.thermal_inertia**2 / (self.density * self.specific_heat_capacity))
+
+    @property
+    def thermal_diffusivity(self):
+        """kappa = k / (rho c)."""
+        return self.thermal_conductivity / (self.density * self.specific_heat_capacity)
+
+    @property
+    def skin_depth(self):
+        """Diurnal thermal skin depth sqrt(kappa / omega)."""
+        return (self.thermal_conductivity / (self.density * self.specific_heat_capacity * self.angular_velocity)) ** 0.5
+
+    @property
+    def layer_thickness(self):
+        """Subsurface layer thickness for a grid spanning 8 skin depths."""
+        return 8 * self.skin_depth / self.n_layers
+
+    @property
+    def timesteps_per_day(self):
+        """
+        Timesteps per rotation: the caller's value if one was supplied
+        (in the config or by assignment), otherwise the adaptive count.
+        """
+        if self._timesteps_per_day_override is not None:
+            return int(self._timesteps_per_day_override)
+        return self.calculate_adaptive_timesteps()
+
+    @timesteps_per_day.setter
+    def timesteps_per_day(self, value):
+        self._timesteps_per_day_override = None if value is None else int(value)
+
+    @property
+    def delta_t(self):
+        """Integration timestep. Always consistent with the current period and timestep count."""
+        return self.rotation_period_s / self.timesteps_per_day
+
+    # ------------------------------------------------------------------------
+
     def calculate_adaptive_timesteps(self):
         """
-        Calculate timesteps.
-        
-        If 'timesteps_per_day' is specified in the config, it is used directly.
-        Otherwise, adaptive timesteps are calculated based on CFL stability limits
-        (mainly for the explicit solver).
+        Timestep count required for stability, from CFL plus a limit on the
+        insolation coefficient (mainly for the explicit solver).
+
+        This is the value used when the caller has not specified
+        timesteps_per_day; it does not consult the override.
         """
-        # Check if user specified timesteps_per_day in config
-        # Note: self.timesteps_per_day is set by load_configuration before this is called
-        user_timesteps = getattr(self, 'timesteps_per_day', None)
-        
         # Stability calculation (CFL limits)
         # Use a safety factor to ensure const3 is well below 0.5
         cfl_safety_factor = 0.8
         cfl_denominator = cfl_safety_factor * (self.layer_thickness**2 / (2 * self.thermal_diffusivity))
         timesteps_cfl = int(np.ceil(self.rotation_period_s / cfl_denominator))
-        
-        if user_timesteps is not None:
-            # Warn if user-specified timesteps violate CFL for the explicit solver
-            solver_name = getattr(self, 'temp_solver', '')
-            if solver_name == 'tempest_standard' and int(user_timesteps) < timesteps_cfl:
-                print("\n" + "=" * 80)
-                print("  WARNING: CFL STABILITY VIOLATION (explicit solver)")
-                print("=" * 80)
-                print(f"  You specified timesteps_per_day = {int(user_timesteps)}, but the CFL")
-                print(f"  stability criterion requires at least {timesteps_cfl} timesteps.")
-                print(f"  The explicit solver will likely produce unphysical results (e.g. all")
-                print(f"  temperatures dropping to 2.7 K).")
-                print(f"")
-                print(f"  Fix: either remove/comment out 'timesteps_per_day' from your config to let TEMPEST")
-                print(f"  choose automatically, or increase it to >= {timesteps_cfl}.")
-                print("=" * 80 + "\n")
-            return int(user_timesteps)
+
         delta_t_cfl = self.rotation_period_s / timesteps_cfl
-        
+
         # Calculate insolation coefficient with CFL timestep
         const1_cfl = delta_t_cfl / (self.layer_thickness * self.density * self.specific_heat_capacity)
-        
+
         # Adaptive constraint: limit const1 for stability
         # Lower limit to 0.01 to ensure radiative stability at high T (~400K)
         max_const1 = 0.01
-        
+
         if const1_cfl > max_const1:
             # Calculate timestep that keeps const1 reasonable
             required_delta_t = max_const1 * self.layer_thickness * self.density * self.specific_heat_capacity
@@ -85,6 +143,34 @@ class Simulation:
             return adaptive_timesteps
         else:
             return timesteps_cfl
+
+    def _warn_if_cfl_violated(self):
+        """
+        Warn if an explicitly specified timesteps_per_day is too coarse for the
+        explicit solver's CFL limit.
+        """
+        user_timesteps = self._timesteps_per_day_override
+        if user_timesteps is None:
+            return
+        if getattr(self, 'temp_solver', '') != 'tempest_standard':
+            return
+
+        cfl_safety_factor = 0.8
+        cfl_denominator = cfl_safety_factor * (self.layer_thickness**2 / (2 * self.thermal_diffusivity))
+        timesteps_cfl = int(np.ceil(self.rotation_period_s / cfl_denominator))
+
+        if int(user_timesteps) < timesteps_cfl:
+            print("\n" + "=" * 80)
+            print("  WARNING: CFL STABILITY VIOLATION (explicit solver)")
+            print("=" * 80)
+            print(f"  You specified timesteps_per_day = {int(user_timesteps)}, but the CFL")
+            print(f"  stability criterion requires at least {timesteps_cfl} timesteps.")
+            print(f"  The explicit solver will likely produce unphysical results (e.g. all")
+            print(f"  temperatures dropping to 2.7 K).")
+            print(f"")
+            print(f"  Fix: either remove/comment out 'timesteps_per_day' from your config to let TEMPEST")
+            print(f"  choose automatically, or increase it to >= {timesteps_cfl}.")
+            print("=" * 80 + "\n")
 
     def _compute_rotation_axis(self):
         """

@@ -232,8 +232,7 @@ def main():
     # If you need to override timesteps_per_day for testing, uncomment below:
     # ============================================================================
     # original_timesteps = simulation.timesteps_per_day
-    # simulation.timesteps_per_day = 5000  # Override timesteps (WARNING: Can be very slow!)
-    # simulation.delta_t = simulation.rotation_period_s / simulation.timesteps_per_day
+    # simulation.timesteps_per_day = 5000  # Override timesteps (WARNING: Can be very slow!)  delta_t follows automatically
     # conditional_print(config.silent_mode, f"WARNING: Overriding timesteps_per_day from {original_timesteps} to {simulation.timesteps_per_day}")
     # ============================================================================
 
@@ -803,13 +802,12 @@ def main():
     # ============================================================================
     conditional_print(config.silent_mode, "Saving temperature arrays for TEMPEST_RAD...")
     
-    # Create output directory if needed (though usually exists)
-    # We'll save to 'output/current_run/' or just 'output/'?
-    # The user script looks for 'output/my_run_folder/'. 
-    # Let's save to a timestamped folder in output/ so it doesn't get overwritten
-    
+    # Each model run gets its own timestamped folder so runs never overwrite
+    # each other.  They all live under output/runs/ to keep output/ itself
+    # readable (analysis products, figures and scratch dirs sit alongside).
+
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_output_dir = f"output/run_{timestamp}"
+    run_output_dir = f"output/runs/run_{timestamp}"
     os.makedirs(run_output_dir, exist_ok=True)
     
     # Save temperatures (Facets x Timesteps)

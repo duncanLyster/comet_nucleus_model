@@ -38,7 +38,7 @@ north_pole_solar_longitude_degrees: 0  # Azimuthal angle (0-360°) where norther
                                         # BUG: Seasonal effects not fully implemented yet, so this parameter may have unexpected effects on convergence time and final temperature distribution. Use with caution.
 
 # Shape model coordinate frame adjustment (applied to STL file before orbital dynamics)
-shape_model_rotation_x_degrees: 90     # Rotation around X axis (for shape model alignment correction)
+shape_model_rotation_x_degrees: 0     # Rotation around X axis (for shape model alignment correction)
 shape_model_rotation_z_degrees: 0     # Rotation around Z axis (for latitude or orientation testing)
 
 # Advanced modelling options

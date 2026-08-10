@@ -1,6 +1,13 @@
+import os
 import numpy as np
 import math
 from tqdm import tqdm
+
+# Radial concentration of the crater's rings. < 1 puts smaller facets near the
+# rim (better shadowing resolution at grazing angles), > 1 near the centre.
+# 0.75 is the production value; the env override exists so a mesh-resolution
+# study can vary it without touching the science default.
+RING_POWER = float(os.environ.get('CRATER_RING_POWER', '0.75'))
 
 
 def _calculate_facet_properties(p1, p2, p3):
@@ -102,7 +109,7 @@ def generate_canonical_spherical_cap(n_subfacets, profile_angle_deg, return_ring
     # Use power < 1 to concentrate rings near the rim
     # This helps with shadowing resolution at grazing angles
     # Changed from 0.5 to 0.75 to keep high density near rim but increase resolution at the center
-    power = 0.75 
+    power = RING_POWER
 
     # Determine rings
     ring_counts, actual_n = _compute_equilateral_rings(n_subfacets, phi, sphere_r, power=power)
