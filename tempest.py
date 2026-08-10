@@ -232,8 +232,7 @@ def main():
     # If you need to override timesteps_per_day for testing, uncomment below:
     # ============================================================================
     # original_timesteps = simulation.timesteps_per_day
-    # simulation.timesteps_per_day = 5000  # Override timesteps (WARNING: Can be very slow!)
-    # simulation.delta_t = simulation.rotation_period_s / simulation.timesteps_per_day
+    # simulation.timesteps_per_day = 5000  # Override timesteps (WARNING: Can be very slow!)  delta_t follows automatically
     # conditional_print(config.silent_mode, f"WARNING: Overriding timesteps_per_day from {original_timesteps} to {simulation.timesteps_per_day}")
     # ============================================================================
 

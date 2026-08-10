@@ -156,7 +156,6 @@ if 'LUT_THETA_VALUES' in os.environ:
 if 'LUT_OPENING_ANGLES' in os.environ:
     OPENING_ANGLES = [float(x) for x in os.environ['LUT_OPENING_ANGLES'].split(',')]
 # restrict the latitude grid — for single-latitude convergence/benchmark runs
-# (a full 37-latitude grid at high subfacet counts is a multi-hour job)
 if 'LUT_LATITUDE_VALUES' in os.environ:
     LATITUDE_VALUES = np.array([float(x) for x in os.environ['LUT_LATITUDE_VALUES'].split(',')])
 # inter-facet scattering iterations inside the crater (1 = single bounce; higher =
@@ -354,13 +353,14 @@ def simulate_crater_diurnal_cycle(theta, opening_angle, latitude, config, n_time
     # 1. Setup Simulation Object
     simulation = Simulation(config)
     
+    # Only independent inputs are set here; Simulation derives delta_t,
+    # angular_velocity, skin_depth etc. on read, so they stay consistent.
     simulation.timesteps_per_day = n_timesteps
-    simulation.rotation_period_hours = ROTATION_PERIOD_HOURS 
+    simulation.rotation_period_hours = ROTATION_PERIOD_HOURS
     simulation.density = 2000.0 # Standard Value
     simulation.specific_heat_capacity = 1000.0 # Standard Value
-    omega = 2 * np.pi / (simulation.rotation_period_hours * 3600)
-    simulation.angular_velocity = omega
-    
+    omega = simulation.angular_velocity
+
     # Calculate Thermal Inertia from Dimensionless Theta
     # P = I * sqrt(omega) / (epsilon * sigma * Tss^3)
     # Tss = ((1-A) * S / (epsilon * sigma))^0.25
@@ -380,14 +380,10 @@ def simulate_crater_diurnal_cycle(theta, opening_angle, latitude, config, n_time
     
     thermal_inertia = (theta * epsilon * boltzmann * (tss**3)) / np.sqrt(omega)
     
-    # Update Simulation with derived thermal inertia
+    # Update Simulation with derived thermal inertia. Conductivity, skin depth,
+    # layer thickness and diffusivity all follow from this automatically.
     simulation.thermal_inertia = thermal_inertia
-    # Update skin depth etc
-    simulation.thermal_conductivity = (simulation.thermal_inertia**2) / (simulation.density * simulation.specific_heat_capacity)
-    simulation.skin_depth = (simulation.thermal_conductivity / (simulation.density * simulation.specific_heat_capacity * simulation.angular_velocity)) ** 0.5
-    simulation.layer_thickness = 8 * simulation.skin_depth / simulation.n_layers
-    simulation.thermal_diffusivity = simulation.thermal_conductivity / (simulation.density * simulation.specific_heat_capacity)
-    
+
     # 2. Build shape model from pre-computed geometry (mesh + view factors computed once in main)
     n_facets = precomputed['n_facets']
     rotation_to_equator = precomputed['rotation_to_equator']
@@ -519,7 +515,7 @@ def simulate_crater_diurnal_cycle(theta, opening_angle, latitude, config, n_time
 
     # Return temperatures and sun vectors (geometry comes from precomputed dict).
     # return_thermal_data adds the solved ThermalData as a 4th element, so callers
-    # can reach the per-subfacet insolation (needed to reproduce SCATTERED optical
+    # can reach the per-subfacet insolation (needed to reproduce scattered optical
     # flux, e.g. the Magri et al. 2018 Table A1 bolometric row, which validates the
     # crater geometry and scattering with no thermal physics involved).  Default
     # False keeps the 3-tuple that process_single_case unpacks.
@@ -687,8 +683,8 @@ def process_single_case(theta, opening_angle, lat, config, precomputed):
                     # Store radiance ratio: R = I_rough / I_smooth = L_rough / L_smooth
                     if cos_e < 1e-12:
                         # Grazing limb (e = 90°): the smooth reference projects to
-                        # zero area, so R = 0/0 is genuinely UNDEFINED, not 1.
-                        # Storing 1.0 here (the old behaviour) put a spurious step in
+                        # zero area, so R = 0/0 is undefined (not 1).
+                        # Storing 1.0 here (the old way) put a spurious step in
                         # the last row — R falls to ~0.45 by e = 87.5° and then jumped
                         # back to exactly 1.  NaN makes the interpolator refuse the
                         # cell instead; queries are held below EMI_CAP in lut.py so it
@@ -703,11 +699,11 @@ def process_single_case(theta, opening_angle, lat, config, precomputed):
                         result_grid[t_idx, i_w, i_e, i_a] = np.clip(ratio, 0.0, 50.0)
 
     # --- PER-TIMESTEP BOLOMETRIC CLOSURE DIAGNOSTIC alpha(t) ---
-    # alpha(t) is the scalar that WOULD force the Planck-weighted bolometric
-    # angular mean of R to 1.0 at each timestep.  Historically it was APPLIED to
+    # alpha(t) is the scalar that would force the Planck-weighted bolometric
+    # angular mean of R to 1.0 at each timestep.  Historically it was applied to
     # the LUT; that was masking a missing-self-heating bug (alpha ~ 2.1).  With
     # self-heating, intra-crater scattering, and warm-start convergence fixed,
-    # energy closure is inherent in the simulation, and forcing INSTANTANEOUS
+    # energy closure is inherent in the simulation, and forcing instantaneous
     # closure against the smooth reference would erase genuine diurnal beaming
     # (the cavity is really warmer than the smooth facet at night and lags it in
     # the morning).  alpha is therefore recorded as a diagnostic only; set

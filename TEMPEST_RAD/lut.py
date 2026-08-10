@@ -158,15 +158,15 @@ class RoughnessLUT:
         # Clip Latitudes (just in case)
         latitudes = np.abs(latitudes)
         
-        # Cap emission angle to avoid limb divergence.
+        # Cap emission angle to avoid limb divergence. Due to discretisation error. 
         # The ratio R = I_rough / I_smooth is ill-conditioned as emission -> 90°
         # because the Lambertian denominator cos(e) -> 0 while the rough radiance
         # stays finite, and the e = 90° row is undefined outright (blanked to NaN
         # above).  Capping at 80° keeps queries in the well-behaved regime; limb
         # facets beyond 80° contribute negligibly to disk-integrated flux
-        # (cos 80° = 0.17).
+        # (cos 80° = 0.17). (Is this actually true? TODO: Check this more carefully.) 
         #
-        # 80° is now justified rather than merely convenient.  An exact test —
+        # 80° is somewhat justified rather than merely convenient.  An exact test —
         # for an ISOTHERMAL crater the ratio must be 1 at every angle, since a ray
         # entering a convex cavity's aperture strikes the interior exactly once,
         # so sum_visible A_i cos(theta_i) == A_aperture cos(e) — gives a pure

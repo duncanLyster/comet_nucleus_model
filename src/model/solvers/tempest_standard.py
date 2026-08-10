@@ -265,6 +265,23 @@ class TempestStandardSolver(TemperatureSolver):
         # Subsurface heating constant (converts flux W/m² to temperature change)
         subsurface_const = config.subsurface_heating_flux * simulation.delta_t / (simulation.layer_thickness * simulation.density * simulation.specific_heat_capacity)
 
+        # CFL guard. Simulation warns about an unsafe timesteps_per_day given in
+        # the config, but it cannot catch a caller (e.g. from TEMPEST_RAD) that sets timesteps_per_day or
+        # thermal_inertia after construction. const3 is the actual stability
+        # number this solve will use, so check it here where nothing can be stale.
+        if const3 > 0.5:
+            required = int(np.ceil(simulation.timesteps_per_day * const3 / 0.5))
+            print("\n" + "=" * 80)
+            print("  WARNING: CFL STABILITY VIOLATION (explicit solver)")
+            print("=" * 80)
+            print(f"  const3 = {const3:.4f}, but the explicit scheme requires const3 <= 0.5.")
+            print(f"  timesteps_per_day = {simulation.timesteps_per_day} is too coarse for")
+            print(f"  thermal_inertia = {simulation.thermal_inertia:g} and n_layers = {simulation.n_layers};")
+            print(f"  at least {required} timesteps are needed.")
+            print(f"  Expect unphysical results (e.g. temperatures collapsing to 2.7 K).")
+            print(f"  Fix: raise timesteps_per_day to >= {required}, or use 'tempest_implicit'.")
+            print("=" * 80 + "\n")
+
         convergence_error = simulation.convergence_target + 1
         day = 0
         error_history = []
